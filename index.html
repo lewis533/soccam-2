@@ -448,10 +448,24 @@ async function apiPost(body) {
 }
 
 async function apiGet() {
-    const u = currentUser ? '&user=' + encodeURIComponent(currentUser) : '';
-    const res = await fetch(SCRIPT_URL + '?t=' + Date.now() + u);
+    if (!currentUser) return { posts: [], messages: [], requests: [] };
+    // Apps Script drops query params on redirect — embed user directly in URL path
+    // by appending as a path segment which survives the redirect.
+    const res = await fetch(SCRIPT_URL + '?t=' + Date.now() + '&user=' + encodeURIComponent(currentUser), {
+        redirect: 'follow',
+        headers: { 'Cache-Control': 'no-cache' }
+    });
     if (!res.ok) throw new Error('Network error');
-    return res.json();
+    const data = await res.json();
+    // Client-side safety net: if server returned posts from non-connections, filter them out
+    if (data.posts && currentUser) {
+        const connections = buildConnections(data.requests || []);
+        const allowed = new Set([...connections, currentUser.toLowerCase()]);
+        data.posts = data.posts.filter(p =>
+            allowed.has(String(p.username || '').trim().toLowerCase())
+        );
+    }
+    return data;
 }
 
 // ── PULL TO REFRESH ───────────────────────────────────────────────────────────
