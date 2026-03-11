@@ -1,4 +1,4 @@
-const CACHE = 'lapp-v1';
+const CACHE = 'lapp-v10';
 const ASSETS = [
   './',
   './index.html',
@@ -32,22 +32,32 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // Cache first for app shell assets
+  // Network first for HTML files — always get fresh version
+  if (url.includes('.html') || e.request.mode === 'navigate') {
+    e.respondWith(
+      fetch(e.request).then(response => {
+        if (response && response.status === 200) {
+          const copy = response.clone();
+          caches.open(CACHE).then(cache => cache.put(e.request, copy));
+        }
+        return response;
+      }).catch(() => caches.match('./index.html'))
+    );
+    return;
+  }
+
+  // Cache first for everything else (fonts, manifest, etc)
   e.respondWith(
     caches.match(e.request).then(cached => {
       if (cached) return cached;
       return fetch(e.request).then(response => {
-        // Cache valid responses
         if (response && response.status === 200 && response.type === 'basic') {
           const copy = response.clone();
           caches.open(CACHE).then(cache => cache.put(e.request, copy));
         }
         return response;
       }).catch(() => {
-        // Offline fallback — return cached index.html for navigation requests
-        if (e.request.mode === 'navigate') {
-          return caches.match('./index.html');
-        }
+        if (e.request.mode === 'navigate') return caches.match('./index.html');
       });
     })
   );
