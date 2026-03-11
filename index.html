@@ -739,11 +739,12 @@ function closePopup(e) {
 function showMyProfile() { showUserProfile(currentUser); }
 
 function showUserProfile(username) {
-    const u = username.replace('@','');
-    // Only show public posts from this user
-    const posts = cachedPosts.filter(p =>
-        String(p.username).trim().toLowerCase() === u.toLowerCase() && p.visibility === 'public'
-    );
+    const u = username.replace('@','').toLowerCase();
+    // Only show posts if this is your own profile OR a direct connection
+    const isAllowed = u === currentUser.toLowerCase() || myConnections.has(u);
+    const posts = isAllowed
+        ? cachedPosts.filter(p => String(p.username).trim().toLowerCase() === u && p.visibility === 'public')
+        : [];
     const totalLikes = posts.reduce((sum, p) => sum + safeParseArr(p.likers || p.likes || '[]').length, 0);
     const totalViews = posts.reduce((sum, p) => sum + safeParseArr(p.viewers || p.views || '[]').length, 0);
     const bio = localStorage.getItem('lapp_bio_' + u) || '';
@@ -764,7 +765,13 @@ function showUserProfile(username) {
         </div>`;
     }).join('');
 
-    if (u === currentUser) {
+    // Show lock message on grid if not connected
+    if (!isAllowed) {
+        document.getElementById('profileGrid').innerHTML =
+            '<div style="grid-column:1/-1;text-align:center;padding:20px;font-size:10px;color:var(--muted);font-family:'Space Mono',monospace;letter-spacing:1px;">🔒 CONNECT TO VIEW POSTS</div>';
+    }
+
+    if (u === currentUser.toLowerCase()) {
         document.getElementById('profileBio').onclick = () => {
             const nb = prompt('Edit your bio:', bio);
             if (nb !== null) { localStorage.setItem('lapp_bio_' + u, nb); showUserProfile(u); }
