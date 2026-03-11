@@ -65,13 +65,6 @@
         @keyframes pop { 0%{transform:scale(1)} 50%{transform:scale(1.4)} 100%{transform:scale(1)} }
         .action-btn.liked .action-icon { animation:pop 0.25s ease; }
 
-        /* REACTIONS PICKER */
-        .reactions-picker { display:none; position:absolute; background:var(--card); border:1px solid var(--border); border-radius:40px; padding:8px 12px; gap:8px; z-index:100; box-shadow:0 8px 30px rgba(0,0,0,0.5); animation:popIn 0.2s ease; }
-        .reactions-picker.open { display:flex; }
-        @keyframes popIn { from{transform:scale(0.7);opacity:0} to{transform:scale(1);opacity:1} }
-        .reaction-opt { font-size:22px; cursor:pointer; transition:transform 0.15s; border:none; background:none; }
-        .reaction-opt:active { transform:scale(1.3); }
-
         /* COMMENTS */
         .comments-section { border-top:1px solid var(--border); padding:12px 14px; display:none; }
         .comments-section.open { display:block; }
@@ -349,23 +342,19 @@ let pendingFile    = null;
 let knownMsgIds    = new Set();
 let isSendingMsg   = false;
 let replyingToPost = null;
+// myConnections is the source of truth for who you can interact with.
+// It is populated from the API on every load. Never derived partially.
 let myConnections  = new Set();
 let cachedPosts    = [];
-let cachedMessages = [];
-let lastSeenMsgCount = parseInt(localStorage.getItem('lapp_seen_msgs') || '0');
 
+// ── INIT ──────────────────────────────────────────────────────────────────────
 (function init() {
     const u = localStorage.getItem('lapp_user');
-    const p = localStorage.getItem('lapp_pass');
-    if (u && p) { currentUser = u; loginSuccess(); }
-    // Apply saved theme
+    if (u) { currentUser = u; loginSuccess(); }
     if (localStorage.getItem('lapp_theme') === 'light') {
         document.body.classList.add('light');
-        document.getElementById('themeBtn') && (document.getElementById('themeBtn').textContent = '☀️');
     }
-    // Register service worker
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
-    // Pull to refresh
     setupPullToRefresh();
 })();
 
@@ -394,6 +383,41 @@ function loginSuccess() {
     document.getElementById('feedUsername').textContent = currentUser;
     document.getElementById('themeBtn').textContent = localStorage.getItem('lapp_theme') === 'light' ? '☀️' : '🌙';
     showPage('feedPage');
+    // Background poll: keep the chat dot fresh from any page
+    setInterval(pollUnreadDot, 10000);
+}
+
+// Lightweight check for unread messages — only updates the nav dot
+async function pollUnreadDot() {
+    if (!currentUser) return;
+    try {
+        const data = await apiGet();
+        const seenPerSender = JSON.parse(localStorage.getItem('lapp_seen_per') || '{}');
+        let hasUnread = false;
+        (data.messages||[]).forEach(m => {
+            if (String(m.receiver).trim().toLowerCase() !== currentUser.toLowerCase()) return;
+            if (m.status === 'comment') return;
+            const sender = String(m.sender).trim().toLowerCase();
+            const msgId  = m.chat_id || m.id || (m.sender + '_' + (m.timestamp||m.ts||'') + '_' + String(m.text||'').slice(0,20));
+            if (!hasUnread) {
+                // Count unique msg ids per sender and compare to seen count
+                // We do a quick check: if any message id isn't in a reconstructed seen set, flag unread
+                const seenCount = seenPerSender[sender] || 0;
+                // We can't reconstruct exact seen ids here, but we can compare total counts
+                // This is handled more precisely in loadChatList — this is just for the dot
+            }
+        });
+        // Rebuild counts per sender
+        const totalPerSender = {};
+        (data.messages||[]).forEach(m => {
+            if (String(m.receiver).trim().toLowerCase() !== currentUser.toLowerCase()) return;
+            if (m.status === 'comment') return;
+            const sender = String(m.sender).trim().toLowerCase();
+            totalPerSender[sender] = (totalPerSender[sender] || 0) + 1;
+        });
+        hasUnread = Object.keys(totalPerSender).some(s => totalPerSender[s] > (seenPerSender[s] || 0));
+        document.getElementById('chatDot').style.display = hasUnread ? 'block' : 'none';
+    } catch(e) {}
 }
 
 // ── NAVIGATION ────────────────────────────────────────────────────────────────
@@ -407,17 +431,12 @@ function showPage(id) {
     if (id === 'feedPage')   loadFeed();
     if (id === 'vaultPage')  loadVault();
     if (id === 'chatPage') {
-        document.getElementById('chatDot').style.display = 'none';
-        fetch(SCRIPT_URL + '?t=' + Date.now()).then(r => r.json()).then(d => {
-            const count = (d.messages||[]).filter(m => m.receiver === currentUser && m.status !== 'comment').length;
-            lastSeenMsgCount = count;
-            localStorage.setItem('lapp_seen_msgs', count);
-        }).catch(()=>{});
+        // Don't hide the dot here — loadChatList() will compute it correctly
         loadChatList();
         syncTimer = setInterval(loadChatList, 5000);
     }
     if (id === 'peoplePage') loadSocial();
-    if (id === 'uploadPage') { pendingFile = null; document.getElementById('previewArea').style.display = 'none'; document.getElementById('captionInput').value = ''; }
+    if (id === 'uploadPage') resetUploadForm();
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────
@@ -460,29 +479,51 @@ function filterFeed() {
     });
 }
 
+// ── BUILD CONNECTIONS SET ──────────────────────────────────────────────────────
+// Returns a Set of usernames you have a DIRECT accepted connection with.
+// This is the ONLY place connections are computed to avoid inconsistency.
+function buildConnections(requests) {
+    const connections = new Set();
+    (requests || []).forEach(r => {
+        if (String(r.status).trim() !== 'accepted') return;
+        const sender   = String(r.sender).trim().toLowerCase();
+        const receiver = String(r.receiver).trim().toLowerCase();
+        if (sender === currentUser.toLowerCase())   connections.add(receiver);
+        if (receiver === currentUser.toLowerCase()) connections.add(sender);
+    });
+    return connections;
+}
+
 // ── FEED ──────────────────────────────────────────────────────────────────────
 async function loadFeed() {
     const container = document.getElementById('feedItems');
     container.innerHTML = '<div class="spinner"></div>';
     try {
         const data = await apiGet();
-        cachedPosts    = data.posts    || [];
-        cachedMessages = data.messages || [];
+        cachedPosts = data.posts || [];
 
-        myConnections.clear();
-        (data.requests || []).forEach(r => {
-            if (String(r.status).trim() === 'accepted') {
-                if (String(r.sender).trim().toLowerCase() === currentUser.toLowerCase()) myConnections.add(String(r.receiver).trim());
-                if (String(r.receiver).trim().toLowerCase() === currentUser.toLowerCase()) myConnections.add(String(r.sender).trim());
-            }
-        });
+        // ✅ PRIVACY FIX: build connections first, then filter posts to only
+        // show your own posts and posts from direct connections.
+        myConnections = buildConnections(data.requests);
 
-        // Check for new notifications
+        const allowedUsers = new Set([...myConnections, currentUser.toLowerCase()]);
+
+        const posts = cachedPosts
+            .filter(p =>
+                p.visibility === 'public' &&
+                allowedUsers.has(String(p.username).trim().toLowerCase())
+            )
+            .reverse();
+
         checkNotifications(data);
 
-        const posts = cachedPosts.filter(p => p.visibility === 'public').reverse();
-        if (!posts.length) { container.innerHTML = '<div class="empty-state">NO POSTS YET</div>'; return; }
-        container.innerHTML = posts.map(p => renderPostCard(p, cachedMessages)).join('');
+        if (!posts.length) {
+            container.innerHTML = '<div class="empty-state">NO POSTS YET<br><br><span style="font-size:9px;opacity:0.5;">Connect with people to see their posts</span></div>';
+            return;
+        }
+
+        const allMessages = data.messages || [];
+        container.innerHTML = posts.map(p => renderPostCard(p, allMessages)).join('');
         setupViewObserver();
         setupDoubleTapLike();
     } catch(e) {
@@ -496,13 +537,12 @@ function setupDoubleTapLike() {
         let lastTap = 0;
         const media = card.querySelector('.post-media');
         if (!media) return;
-        media.addEventListener('touchend', e => {
+        media.addEventListener('touchend', () => {
             const now = Date.now();
             if (now - lastTap < 350) {
                 const likeBtn = card.querySelector('.action-btn:not([style*="cursor:default"])');
                 if (likeBtn && likeBtn.querySelector('.like-count')) {
                     if (!likeBtn.classList.contains('liked')) toggleLike(card.dataset.url, likeBtn);
-                    // Heart animation
                     const heart = document.createElement('div');
                     heart.textContent = '❤️';
                     heart.style.cssText = 'position:absolute;font-size:60px;top:50%;left:50%;transform:translate(-50%,-50%) scale(0);pointer-events:none;z-index:10;transition:all 0.4s ease;';
@@ -518,7 +558,7 @@ function setupDoubleTapLike() {
     });
 }
 
-function renderPostCard(p, allComments) {
+function renderPostCard(p, allMessages) {
     const isVideo   = p.type === 'video' || /\.(mp4|mov|webm|avi)$/i.test(p.url);
     const likeList  = safeParseArr(p.likers || p.likes || p.likedby || '[]');
     const viewList  = safeParseArr(p.viewers || p.views || p.viewedby || '[]');
@@ -526,10 +566,11 @@ function renderPostCard(p, allComments) {
     const safeUrl   = escHtml(p.url);
     const safeUser  = escHtml(p.username);
     const caption   = p.caption ? escHtml(p.caption) : '';
-    const isOwner   = String(p.username).trim().toLowerCase() === String(currentUser).trim().toLowerCase();
-    const isOther   = myConnections.has(String(p.username).trim()) && !isOwner;
+    const isOwner   = String(p.username).trim().toLowerCase() === currentUser.toLowerCase();
+    // isOther: this post belongs to someone you're directly connected with (not yourself)
+    const isOther   = !isOwner && myConnections.has(String(p.username).trim().toLowerCase());
 
-    const postComments = allComments.filter(m => {
+    const postComments = allMessages.filter(m => {
         const pu = m.attached_media || m.posturl || m.postUrl || '';
         return m.status === 'comment' && pu && (pu === p.url);
     });
@@ -545,9 +586,7 @@ function renderPostCard(p, allComments) {
                <span class="action-icon">${liked ? '❤️' : '🤍'}</span>
                <span class="like-count">${likeList.length}</span>
            </button>`
-        : isOwner
-            ? `<span class="action-btn" style="cursor:default;">❤️ <span class="like-count">${likeList.length}</span></span>`
-            : `<span class="action-btn" style="cursor:default;opacity:0.3;">🤍 ${likeList.length}</span>`;
+        : `<span class="action-btn" style="cursor:default;">❤️ <span class="like-count">${likeList.length}</span></span>`;
 
     const whoLikedBtn = isOwner
         ? `<button class="action-btn" onclick="showWhoList('${safeUrl}','likes')" style="font-size:9px;padding:6px 6px;">WHO</button>`
@@ -659,12 +698,8 @@ function setupViewObserver() {
         entries.forEach(e => {
             if (e.isIntersecting) {
                 const card = e.target;
-                const url = card.dataset.url;
-                const postUser = card.querySelector('.post-user');
-                const owner = postUser ? postUser.textContent.replace('@','').trim() : '';
-                if (url && (myConnections.has(owner) || owner === currentUser)) {
-                    apiPost({ action:'registerView', user:currentUser, url });
-                }
+                const url  = card.dataset.url;
+                if (url) apiPost({ action:'registerView', user:currentUser, url });
                 obs.unobserve(card);
             }
         });
@@ -705,7 +740,10 @@ function showMyProfile() { showUserProfile(currentUser); }
 
 function showUserProfile(username) {
     const u = username.replace('@','');
-    const posts = cachedPosts.filter(p => String(p.username).trim().toLowerCase() === u.toLowerCase() && p.visibility === 'public');
+    // Only show public posts from this user
+    const posts = cachedPosts.filter(p =>
+        String(p.username).trim().toLowerCase() === u.toLowerCase() && p.visibility === 'public'
+    );
     const totalLikes = posts.reduce((sum, p) => sum + safeParseArr(p.likers || p.likes || '[]').length, 0);
     const totalViews = posts.reduce((sum, p) => sum + safeParseArr(p.viewers || p.views || '[]').length, 0);
     const bio = localStorage.getItem('lapp_bio_' + u) || '';
@@ -717,7 +755,6 @@ function showUserProfile(username) {
     document.getElementById('profileLikeCount').textContent = totalLikes;
     document.getElementById('profileViewCount').textContent = totalViews;
 
-    // Grid of posts
     document.getElementById('profileGrid').innerHTML = posts.slice(0,9).map(p => {
         const isVid = p.type === 'video' || /\.(mp4|mov|webm|avi)$/i.test(p.url);
         return `<div class="profile-grid-item">
@@ -727,13 +764,15 @@ function showUserProfile(username) {
         </div>`;
     }).join('');
 
-    // Allow editing bio if own profile
     if (u === currentUser) {
         document.getElementById('profileBio').onclick = () => {
             const nb = prompt('Edit your bio:', bio);
             if (nb !== null) { localStorage.setItem('lapp_bio_' + u, nb); showUserProfile(u); }
         };
         document.getElementById('profileBio').style.cursor = 'pointer';
+    } else {
+        document.getElementById('profileBio').onclick = null;
+        document.getElementById('profileBio').style.cursor = 'default';
     }
 
     document.getElementById('profileOverlay').classList.add('open');
@@ -756,10 +795,14 @@ function checkNotifications(data) {
 
 function buildNotifications(data) {
     const notifs = [];
-    const posts  = (data.posts || []).filter(p => String(p.username).trim().toLowerCase() === currentUser.toLowerCase());
-    posts.forEach(p => {
+    // Only build notifications for YOUR OWN posts
+    const myPosts = (data.posts || []).filter(p =>
+        String(p.username).trim().toLowerCase() === currentUser.toLowerCase()
+    );
+    myPosts.forEach(p => {
         safeParseArr(p.likers || p.likes || '[]').forEach(u => {
-            if (u !== currentUser) notifs.push({ type:'like', user:u, postUrl:p.url, time:p.time });
+            if (u.toLowerCase() !== currentUser.toLowerCase())
+                notifs.push({ type:'like', user:u, postUrl:p.url, time:p.time });
         });
         (data.messages || []).filter(m => {
             const pu = m.attached_media || m.posturl || '';
@@ -768,10 +811,10 @@ function buildNotifications(data) {
             notifs.push({ type:'comment', user:m.sender, text:m.text, postUrl:p.url, time:m.timestamp });
         });
     });
-    // New follower requests
-    (data.requests || []).filter(r => r.receiver === currentUser && r.status === 'pending').forEach(r => {
-        notifs.push({ type:'request', user:r.sender, time:'' });
-    });
+    // Follow requests directed at you
+    (data.requests || [])
+        .filter(r => String(r.receiver).trim().toLowerCase() === currentUser.toLowerCase() && r.status === 'pending')
+        .forEach(r => notifs.push({ type:'request', user:r.sender, time:'' }));
     return notifs;
 }
 
@@ -784,7 +827,10 @@ async function showNotifications() {
         const notifs = buildNotifications(data);
         seenNotifCount = notifs.length;
         localStorage.setItem('lapp_seen_notifs', notifs.length);
-        if (!notifs.length) { document.getElementById('notifList').innerHTML = '<div class="empty-state">NO NOTIFICATIONS YET</div>'; return; }
+        if (!notifs.length) {
+            document.getElementById('notifList').innerHTML = '<div class="empty-state">NO NOTIFICATIONS YET</div>';
+            return;
+        }
         document.getElementById('notifList').innerHTML = notifs.reverse().slice(0,30).map(n => {
             let icon = '🔔', text = '';
             if (n.type === 'like')    { icon = '❤️'; text = `<strong>@${escHtml(n.user)}</strong> liked your post`; }
@@ -838,7 +884,9 @@ async function loadVault() {
     container.innerHTML = '<div class="spinner"></div>';
     try {
         const data = await apiGet();
-        const posts = (data.posts || []).filter(p => p.username === currentUser && p.visibility === 'private').reverse();
+        const posts = (data.posts || [])
+            .filter(p => String(p.username).trim().toLowerCase() === currentUser.toLowerCase() && p.visibility === 'private')
+            .reverse();
         if (!posts.length) { container.innerHTML = '<div class="empty-state">YOUR VAULT IS EMPTY</div>'; return; }
         container.innerHTML = `<div class="vault-grid">${posts.map(p => {
             const isVideo = p.type === 'video' || /\.(mp4|mov|webm|avi)$/i.test(p.url);
@@ -865,47 +913,147 @@ function triggerCapture(accept, captureMode) {
     const input = document.createElement('input');
     input.type = 'file'; input.accept = accept;
     if (captureMode) input.capture = captureMode;
-    input.onchange = e => {
+    input.onchange = async e => {
         const file = e.target.files[0];
         if (!file) return;
-        pendingFile = file;
-        const url = URL.createObjectURL(file);
-        document.getElementById('previewBox').innerHTML = file.type.startsWith('video')
-            ? `<video src="${url}" controls muted playsinline></video>`
-            : `<img src="${url}">`;
+        const isVideo = file.type.startsWith('video');
+        // Show preview immediately with object URL; compression happens at upload time
+        const previewUrl = URL.createObjectURL(file);
+        document.getElementById('previewBox').innerHTML = isVideo
+            ? `<video src="${previewUrl}" controls muted playsinline></video>`
+            : `<img src="${previewUrl}">`;
         document.getElementById('previewArea').style.display = 'block';
+        // Store original file; compress images at upload time
+        pendingFile = file;
+        pendingPreviewUrl = previewUrl;
+        if (!isVideo) {
+            const mb = (file.size / 1024 / 1024).toFixed(1);
+            if (mb > 1) toast(`Image selected (${mb}MB) — will compress on upload`);
+        }
     };
     input.click();
 }
 
+// Compress an image File to a Blob via Canvas, targeting ~1200px max dimension
+function compressImage(file, maxDim = 1200, quality = 0.82) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        const objUrl = URL.createObjectURL(file);
+        img.onload = () => {
+            URL.revokeObjectURL(objUrl);
+            let { width, height } = img;
+            if (width > maxDim || height > maxDim) {
+                if (width > height) { height = Math.round(height * maxDim / width); width = maxDim; }
+                else                { width = Math.round(width * maxDim / height); height = maxDim; }
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width; canvas.height = height;
+            canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+            canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Compression failed')), 'image/jpeg', quality);
+        };
+        img.onerror = reject;
+        img.src = objUrl;
+    });
+}
+
+// Upload with XMLHttpRequest so we can show real progress
+function xhrUpload(url, formData, onProgress) {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', url);
+        xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+        xhr.onload  = () => {
+            try { resolve(JSON.parse(xhr.responseText)); }
+            catch(e) { reject(new Error('Bad response')); }
+        };
+        xhr.onerror = () => reject(new Error('Network error'));
+        xhr.send(formData);
+    });
+}
+
+function setUploadProgress(pct, label) {
+    const btn = document.getElementById('upBtn');
+    btn.textContent = label || `UPLOADING ${Math.round(pct * 100)}%`;
+}
+
+function resetUploadForm() {
+    const btn = document.getElementById('upBtn');
+    btn.disabled = false;
+    btn.textContent = 'UPLOAD POST';
+    pendingFile = null;
+    if (pendingPreviewUrl) { URL.revokeObjectURL(pendingPreviewUrl); pendingPreviewUrl = null; }
+    document.getElementById('previewArea').style.display = 'none';
+    document.getElementById('previewBox').innerHTML = '';
+    document.getElementById('captionInput').value = '';
+    document.getElementById('postVis').value = 'public';
+}
+
+let pendingPreviewUrl = null;
+
 async function uploadNow() {
     if (!pendingFile) { toast('No file selected'); return; }
     const btn = document.getElementById('upBtn');
-    btn.disabled = true; btn.textContent = 'UPLOADING...';
+    btn.disabled = true;
+    const isVideo = pendingFile.type.startsWith('video');
+
     try {
+        let uploadBlob;
+        if (isVideo) {
+            // Videos: upload as-is; Cloudinary handles transcoding server-side.
+            // Pass quality_auto + format auto via eager params baked into the preset.
+            uploadBlob = pendingFile;
+            setUploadProgress(0, 'PREPARING...');
+        } else {
+            // Images: compress client-side before sending
+            setUploadProgress(0, 'COMPRESSING...');
+            uploadBlob = await compressImage(pendingFile);
+            const origMB = (pendingFile.size / 1024 / 1024).toFixed(1);
+            const newMB  = (uploadBlob.size / 1024 / 1024).toFixed(1);
+            if (origMB !== newMB) toast(`Compressed ${origMB}MB → ${newMB}MB`);
+        }
+
         const fd = new FormData();
-        fd.append('file', pendingFile); fd.append('upload_preset', PRESET);
-        const cData = await (await fetch(CLOUD_URL, { method:'POST', body:fd })).json();
-        if (!cData.secure_url) throw new Error('No URL');
+        fd.append('file', uploadBlob, isVideo ? pendingFile.name : 'photo.jpg');
+        fd.append('upload_preset', PRESET);
+        // Ask Cloudinary to auto-optimise quality & format on their end too
+        fd.append('quality', 'auto');
+        fd.append('fetch_format', 'auto');
+
+        setUploadProgress(0, 'UPLOADING 0%');
+        const cData = await xhrUpload(CLOUD_URL, fd, p => setUploadProgress(p));
+
+        if (!cData.secure_url) throw new Error(cData.error?.message || 'No URL returned');
+
+        setUploadProgress(1, 'SAVING...');
         const caption = document.getElementById('captionInput').value.trim();
-        await apiPost({ action:'publicUpload', username:currentUser, type:pendingFile.type.startsWith('video')?'video':'photo', url:cData.secure_url, visibility:document.getElementById('postVis').value, caption });
-        const pm = document.getElementById('previewBox').querySelector('img,video');
-        if (pm) URL.revokeObjectURL(pm.src);
-        pendingFile = null;
-        toast('Posted! ✓');
-        setTimeout(() => showPage('feedPage'), 800);
-    } catch(e) { toast('Upload failed'); btn.disabled = false; btn.textContent = 'UPLOAD POST'; }
+        await apiPost({
+            action: 'publicUpload',
+            username: currentUser,
+            type: isVideo ? 'video' : 'photo',
+            url: cData.secure_url,
+            visibility: document.getElementById('postVis').value,
+            caption
+        });
+
+        resetUploadForm();
+        toast('Posted! ✓ Upload another or go to feed');
+    } catch(e) {
+        toast('Upload failed: ' + (e.message || 'unknown error'));
+        btn.disabled = false;
+        btn.textContent = 'UPLOAD POST';
+    }
 }
 
 // ── SOCIAL ────────────────────────────────────────────────────────────────────
 async function sendFriendRequest() {
-    const input = document.getElementById('searchUser');
+    const input  = document.getElementById('searchUser');
     const target = input.value.trim().toLowerCase();
     if (!target || target === currentUser) { toast('Invalid username'); return; }
     try {
         const data = await apiGet();
         const already = (data.requests||[]).find(r =>
-            (r.sender===currentUser && r.receiver===target) || (r.sender===target && r.receiver===currentUser)
+            (r.sender===currentUser && r.receiver===target) ||
+            (r.sender===target && r.receiver===currentUser)
         );
         if (already) { toast(already.status==='accepted'?'Already connected!':'Request already sent!'); input.value=''; return; }
     } catch(e) {}
@@ -918,7 +1066,9 @@ async function loadSocial() {
     try {
         const data = await apiGet();
         const requests = data.requests || [];
-        const incoming = requests.filter(r => r.receiver === currentUser && r.status === 'pending');
+        const incoming = requests.filter(r =>
+            String(r.receiver).trim().toLowerCase() === currentUser.toLowerCase() && r.status === 'pending'
+        );
         document.getElementById('incomingList').innerHTML = incoming.length
             ? incoming.map(r => `<div class="person-card">
                 <div><div style="font-weight:700;font-size:13px;">@${escHtml(r.sender)}</div>
@@ -928,11 +1078,13 @@ async function loadSocial() {
             : '<div class="empty-state" style="padding:20px 0;">NO PENDING REQUESTS</div>';
 
         const connections = requests.filter(r =>
-            (r.sender===currentUser||r.receiver===currentUser) && r.status==='accepted'
+            (String(r.sender).trim().toLowerCase()===currentUser.toLowerCase() ||
+             String(r.receiver).trim().toLowerCase()===currentUser.toLowerCase()) &&
+            r.status==='accepted'
         );
         document.getElementById('friendsList').innerHTML = connections.length
             ? connections.map(r => {
-                const name = r.sender===currentUser ? r.receiver : r.sender;
+                const name = String(r.sender).trim().toLowerCase()===currentUser.toLowerCase() ? r.receiver : r.sender;
                 return `<div class="person-card">
                     <div><div style="font-weight:700;font-size:13px;">@${escHtml(name)}</div><span class="tag">CONNECTED</span></div>
                     <div style="display:flex;gap:8px;">
@@ -963,39 +1115,39 @@ async function loadChatList() {
         const partners = new Set();
         (data.requests||[]).forEach(r => {
             if (r.status==='accepted') {
-                if (r.sender===currentUser) partners.add(r.receiver);
-                if (r.receiver===currentUser) partners.add(r.sender);
+                if (String(r.sender).trim().toLowerCase()===currentUser.toLowerCase())   partners.add(r.receiver);
+                if (String(r.receiver).trim().toLowerCase()===currentUser.toLowerCase()) partners.add(r.sender);
             }
         });
-
-        const myMsgs = (data.messages||[]).filter(m => m.receiver === currentUser && m.status !== 'comment');
-        if (myMsgs.length > lastSeenMsgCount) document.getElementById('chatDot').style.display = 'block';
-
-        const container = document.getElementById('chatListContainer');
-        if (!partners.size) { container.innerHTML = '<div class="empty-state">NO CONNECTIONS TO CHAT WITH</div>'; return; }
 
         const seenPerSender = JSON.parse(localStorage.getItem('lapp_seen_per') || '{}');
         const unreadPerSender = {};
         (data.messages||[]).forEach(m => {
-            if (m.receiver === currentUser && m.status !== 'comment') {
-                const sender = m.sender;
-                const msgId = m.chat_id || m.id || '';
+            if (String(m.receiver).trim().toLowerCase() === currentUser.toLowerCase() && m.status !== 'comment') {
+                const sender = String(m.sender).trim().toLowerCase();
+                const msgId  = m.chat_id || m.id || (m.sender + '_' + (m.timestamp||m.ts||'') + '_' + String(m.text||'').slice(0,20));
                 if (!unreadPerSender[sender]) unreadPerSender[sender] = new Set();
                 unreadPerSender[sender].add(msgId);
             }
         });
 
+        // Show nav dot only when there are genuinely unread messages
+        const hasAnyUnread = Object.keys(unreadPerSender).some(s => unreadPerSender[s].size > (seenPerSender[s] || 0));
+        document.getElementById('chatDot').style.display = hasAnyUnread ? 'block' : 'none';
+
+        const container = document.getElementById('chatListContainer');
+        if (!partners.size) { container.innerHTML = '<div class="empty-state">NO CONNECTIONS TO CHAT WITH</div>'; return; }
+
         container.innerHTML = Array.from(partners).map(p => {
-            const total = unreadPerSender[p] ? unreadPerSender[p].size : 0;
-            const seen  = seenPerSender[p] || 0;
+            const pLower   = p.toLowerCase();
+            const total    = unreadPerSender[pLower] ? unreadPerSender[pLower].size : 0;
+            const seen     = seenPerSender[pLower] || 0;
             const hasUnread = total > seen;
             return `
             <div class="chat-card" onclick="openPrivateChatWithReply('${escHtml(p)}')">
-                <div style="display:flex;align-items:center;gap:8px;">
-                    <div>
-                        <div class="chat-card-name">@${escHtml(p)}</div>
-                        <div class="chat-card-sub" style="${hasUnread?'color:var(--neon);':''}">${hasUnread ? '● NEW MESSAGE' : 'TAP TO OPEN →'}</div>
-                    </div>
+                <div>
+                    <div class="chat-card-name">@${escHtml(p)}</div>
+                    <div class="chat-card-sub" style="${hasUnread?'color:var(--neon);':''}">${hasUnread ? '● NEW MESSAGE' : 'TAP TO OPEN →'}</div>
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;">
                     ${hasUnread ? `<span style="background:#ff4d6d;color:white;border-radius:50%;width:18px;height:18px;font-size:10px;display:flex;align-items:center;justify-content:center;font-family:'Space Mono',monospace;font-weight:700;">${total - seen}</span>` : ''}
@@ -1026,17 +1178,29 @@ function openPrivateChat(username) {
     document.getElementById('privateChatScreen').classList.add('open');
     document.getElementById('msgInput').focus();
 
+    // Mark messages from this sender as seen
     apiGet().then(data => {
-        const msgs = (data.messages||[]).filter(m => m.receiver === currentUser && m.sender === username && m.status !== 'comment');
+        const msgs = (data.messages||[]).filter(m =>
+            String(m.receiver).trim().toLowerCase() === currentUser.toLowerCase() &&
+            String(m.sender).trim().toLowerCase()   === username.toLowerCase() &&
+            m.status !== 'comment'
+        );
         const seenPerSender = JSON.parse(localStorage.getItem('lapp_seen_per') || '{}');
-        seenPerSender[username] = msgs.length;
+        seenPerSender[username.toLowerCase()] = msgs.length;
         localStorage.setItem('lapp_seen_per', JSON.stringify(seenPerSender));
-        const total = (data.messages||[]).filter(m => m.receiver === currentUser && m.status !== 'comment').length;
-        lastSeenMsgCount = total;
-        localStorage.setItem('lapp_seen_msgs', total);
-        const allSeen = Object.keys(seenPerSender).every(s => {
-            const sm = (data.messages||[]).filter(m => m.receiver === currentUser && m.sender === s && m.status !== 'comment');
-            return sm.length <= (seenPerSender[s] || 0);
+
+        // Hide dot if all senders are caught up
+        const allSeen = Array.from(new Set(
+            (data.messages||[])
+                .filter(m => String(m.receiver).trim().toLowerCase() === currentUser.toLowerCase() && m.status !== 'comment')
+                .map(m => String(m.sender).trim().toLowerCase())
+        )).every(s => {
+            const count = (data.messages||[]).filter(m =>
+                String(m.receiver).trim().toLowerCase() === currentUser.toLowerCase() &&
+                String(m.sender).trim().toLowerCase()   === s &&
+                m.status !== 'comment'
+            ).length;
+            return count <= (seenPerSender[s] || 0);
         });
         if (allSeen) document.getElementById('chatDot').style.display = 'none';
     }).catch(()=>{});
@@ -1060,12 +1224,10 @@ async function syncMessages() {
     if (!activeChatWith) return;
     try {
         const data = await apiGet();
-        const allMsgs = data.messages || [];
-        const convo = allMsgs.filter(m => {
-            const isPostComment = m.status === 'comment' && (!m.receiver || String(m.receiver).trim() === '');
-            if (isPostComment) return false;
-            return (m.sender === currentUser && m.receiver === activeChatWith) ||
-                   (m.sender === activeChatWith && m.receiver === currentUser);
+        const convo = (data.messages || []).filter(m => {
+            if (m.status === 'comment' && (!m.receiver || String(m.receiver).trim() === '')) return false;
+            return (String(m.sender).trim().toLowerCase()   === currentUser.toLowerCase()   && String(m.receiver).trim().toLowerCase() === activeChatWith.toLowerCase()) ||
+                   (String(m.sender).trim().toLowerCase()   === activeChatWith.toLowerCase() && String(m.receiver).trim().toLowerCase() === currentUser.toLowerCase());
         }).sort((a,b) => new Date(a.timestamp||a.ts||0) - new Date(b.timestamp||b.ts||0));
 
         const container = document.getElementById('chatMessages');
@@ -1075,10 +1237,11 @@ async function syncMessages() {
             const key = m.chat_id || m.id || `${m.sender}_${m.timestamp||m.ts}_${String(m.text).slice(0,20)}`;
             if (knownMsgIds.has(key)) return;
             knownMsgIds.add(key);
-            const isMe = m.sender === currentUser;
-            const msgId = m.chat_id || m.id || '';
-            const isLast = idx === convo.length - 1;
+            const isMe    = String(m.sender).trim().toLowerCase() === currentUser.toLowerCase();
+            const msgId   = m.chat_id || m.id || '';
+            const isLast  = idx === convo.length - 1;
 
+            // Remove optimistic bubble if server confirmed
             const op = container.querySelector(`[data-optimistic="${CSS.escape(String(m.text||'').slice(0,20))}"]`);
             if (op) op.remove();
 
@@ -1092,19 +1255,17 @@ async function syncMessages() {
                 el.textContent = m.text;
             }
 
-            // Long press to delete your own messages
             if (isMe && msgId) {
                 el.dataset.msgId = msgId;
                 let pressTimer;
                 el.addEventListener('touchstart', () => { pressTimer = setTimeout(() => showDeleteMsg(msgId, el), 600); });
-                el.addEventListener('touchend', () => clearTimeout(pressTimer));
-                el.addEventListener('touchmove', () => clearTimeout(pressTimer));
+                el.addEventListener('touchend',   () => clearTimeout(pressTimer));
+                el.addEventListener('touchmove',  () => clearTimeout(pressTimer));
                 el.addEventListener('contextmenu', (e) => { e.preventDefault(); showDeleteMsg(msgId, el); });
             }
 
             container.appendChild(el);
 
-            // Read receipt on last sent message
             if (isMe && isLast) {
                 const seen = document.createElement('div');
                 seen.className = 'bubble-seen';
@@ -1124,8 +1285,8 @@ async function syncMessages() {
 
 function buildReplyBubble(m, isMe) {
     const pUrl  = m.attached_media || m.posturl || m.postUrl || '';
-    const pUser = m.postusername || m.postUsername || m['postusername'] || '?';
-    const pType = m.posttype || m.postType || m['posttype'] || 'image';
+    const pUser = m.postusername || m.postUsername || '?';
+    const pType = m.posttype || m.postType || 'image';
     const wrap  = document.createElement('div');
     wrap.className = `reply-bubble ${isMe ? '' : 'them'}`;
     const previewEl = pType === 'video'
@@ -1146,7 +1307,7 @@ function buildReplyBubble(m, isMe) {
 function showDeleteMsg(msgId, el) {
     if (confirm('Delete this message?')) {
         el.style.opacity = '0.3';
-        apiPost({ action: 'deleteMessage', msgId, user: currentUser }).then(() => {
+        apiPost({ action:'deleteMessage', msgId, user:currentUser }).then(() => {
             el.remove();
             knownMsgIds.delete(msgId);
         });
@@ -1155,7 +1316,7 @@ function showDeleteMsg(msgId, el) {
 
 async function sendMsg() {
     const input = document.getElementById('msgInput');
-    const text = input.value.trim();
+    const text  = input.value.trim();
     if (!text || !activeChatWith || isSendingMsg) return;
     isSendingMsg = true;
     input.value = '';
