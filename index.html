@@ -783,7 +783,7 @@ function showUserProfile(username) {
     // Show lock message on grid if not connected
     if (!isAllowed) {
         document.getElementById('profileGrid').innerHTML =
-            '<div style="grid-column:1/-1;text-align:center;padding:20px;font-size:10px;color:var(--muted);font-family:'Space Mono',monospace;letter-spacing:1px;">🔒 CONNECT TO VIEW POSTS</div>';
+            '<div style="grid-column:1/-1;text-align:center;padding:20px;font-size:10px;color:var(--muted);font-family:monospace;letter-spacing:1px;">🔒 CONNECT TO VIEW POSTS</div>';
     }
 
     if (u === currentUser.toLowerCase()) {
