@@ -331,7 +331,7 @@
 </nav>
 
 <script>
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx4vA5nuflB3Tt9Cm9o2-2ajqORUGpnLQH-y3rgLd1uZT59MFl1q3UYdzOv0SFv06Ap/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzYGJ8Z8NxXZ5QiLMczHmOjPBvN46bLaJRMpDi1zc_k9Owco6yUlc5m-F4lb3kMJWNs/exec";
 const CLOUD_URL  = "https://api.cloudinary.com/v1_1/ddrpctqpl/auto/upload";
 const PRESET     = "lapp_reset";
 
@@ -448,7 +448,8 @@ async function apiPost(body) {
 }
 
 async function apiGet() {
-    const res = await fetch(SCRIPT_URL + '?t=' + Date.now());
+    const u = currentUser ? '&user=' + encodeURIComponent(currentUser) : '';
+    const res = await fetch(SCRIPT_URL + '?t=' + Date.now() + u);
     if (!res.ok) throw new Error('Network error');
     return res.json();
 }
