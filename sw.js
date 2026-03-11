@@ -1,4 +1,4 @@
-const CACHE = 'lapp-v10';
+const CACHE = 'lapp-v11';
 const ASSETS = [
   './',
   './index.html',
