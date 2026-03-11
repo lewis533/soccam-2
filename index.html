@@ -451,10 +451,7 @@ async function apiGet() {
     if (!currentUser) return { posts: [], messages: [], requests: [] };
     // Apps Script drops query params on redirect — embed user directly in URL path
     // by appending as a path segment which survives the redirect.
-    const res = await fetch(SCRIPT_URL + '?t=' + Date.now() + '&user=' + encodeURIComponent(currentUser), {
-        redirect: 'follow',
-        headers: { 'Cache-Control': 'no-cache' }
-    });
+    const res = await fetch(SCRIPT_URL + '?t=' + Date.now() + '&user=' + encodeURIComponent(currentUser));
     if (!res.ok) throw new Error('Network error');
     const data = await res.json();
     // Client-side safety net: if server returned posts from non-connections, filter them out
