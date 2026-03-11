@@ -130,10 +130,10 @@
         .msg-reaction { font-size:14px; position:absolute; bottom:-10px; right:8px; background:var(--card); border:1px solid var(--border); border-radius:20px; padding:1px 5px; }
 
         /* REPLY BUBBLE */
-        .reply-bubble { width:100%; border-radius:16px; overflow:hidden; border:1px solid var(--border); align-self:flex-end; }
+        .reply-bubble { width:100%; border-radius:16px; overflow:hidden; border:1px solid var(--border); align-self:flex-end; flex-shrink:0; }
         .reply-bubble.them { align-self:flex-start; }
-        .reply-preview { background:var(--card2); border-bottom:1px solid var(--border); display:flex; flex-direction:column; }
-        .reply-thumb { width:100%; height:300px; min-height:300px; object-fit:cover; display:block; background:#111; }
+        .reply-preview { background:var(--card2); border-bottom:1px solid var(--border); display:flex; flex-direction:column; flex-shrink:0; }
+        .reply-thumb { width:100%; height:260px; min-height:260px; max-height:260px; object-fit:cover; display:block; background:#111; flex-shrink:0; }
         .reply-post-info { padding:8px 12px; }
         .reply-post-label { font-size:9px; color:var(--muted); font-family:'Space Mono',monospace; letter-spacing:1px; }
         .reply-post-user { font-size:11px; color:var(--neon); font-family:'Space Mono',monospace; font-weight:700; }
@@ -1293,12 +1293,14 @@ async function syncMessages() {
 function buildReplyBubble(m, isMe) {
     const pUrl  = m.attached_media || m.posturl || m.postUrl || '';
     const pUser = m.postusername || m.postUsername || '?';
-    const pType = m.posttype || m.postType || 'image';
+    // Detect video by type field (any casing) OR by URL extension
+    const rawType = m.posttype || m.postType || m['posttype'] || m['postType'] || '';
+    const isVideo = rawType === 'video' || /\.(mp4|mov|webm|avi)(\?|$)/i.test(pUrl);
     const wrap  = document.createElement('div');
     wrap.className = `reply-bubble ${isMe ? '' : 'them'}`;
-    const previewEl = pType === 'video'
-        ? `<video class="reply-thumb" src="${escHtml(pUrl)}" muted playsinline style="width:100%;height:300px;object-fit:cover;display:block;"></video>`
-        : `<img class="reply-thumb" src="${escHtml(pUrl)}" alt="Post preview" onerror="this.style.objectFit='contain';this.style.background='#1a1a1a';">`;
+    const previewEl = isVideo
+        ? `<video class="reply-thumb" src="${escHtml(pUrl)}" muted playsinline controls style="width:100%;height:260px;min-height:260px;max-height:260px;object-fit:cover;display:block;flex-shrink:0;"></video>`
+        : `<img class="reply-thumb" src="${escHtml(pUrl)}" alt="Post preview" style="height:260px;min-height:260px;max-height:260px;" onerror="this.style.objectFit='contain';this.style.background='#1a1a1a';">`;
     wrap.innerHTML = `
         <div class="reply-preview">
             ${previewEl}
@@ -1333,8 +1335,10 @@ async function sendMsg() {
     const payload = { action:'sendDM', sender:currentUser, receiver:activeChatWith, text, ts:Date.now() };
     if (replyingToPost) {
         payload.postUrl      = replyingToPost.url;
-        payload.postType     = replyingToPost.type;
+        payload.postType     = replyingToPost.type;   // camelCase for API
+        payload.posttype     = replyingToPost.type;   // lowercase fallback
         payload.postUsername = replyingToPost.username;
+        payload.postusername = replyingToPost.username;
     }
 
     const container = document.getElementById('chatMessages');
