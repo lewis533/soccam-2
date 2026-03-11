@@ -354,7 +354,12 @@ let cachedPosts    = [];
     if (localStorage.getItem('lapp_theme') === 'light') {
         document.body.classList.add('light');
     }
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('./sw.js').then(reg => reg.update()).catch(()=>{});
+        navigator.serviceWorker.getRegistrations().then(regs => {
+            regs.forEach(reg => reg.update());
+        });
+    }
     setupPullToRefresh();
 })();
 
@@ -452,7 +457,7 @@ async function apiGet() {
     // Apps Script drops query params on redirect — embed user directly in URL path
     // by appending as a path segment which survives the redirect.
     const res = await fetch(SCRIPT_URL + '?t=' + Date.now() + '&user=' + encodeURIComponent(currentUser));
-    if (!res.ok) throw new Error('Network error');
+    if (!res.ok && res.status !== 0) throw new Error("Network error " + res.status);
     const data = await res.json();
     // Client-side safety net: if server returned posts from non-connections, filter them out
     if (data.posts && currentUser) {
