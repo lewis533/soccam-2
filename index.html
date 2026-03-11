@@ -1298,15 +1298,19 @@ function buildReplyBubble(m, isMe) {
     const isVideo = rawType === 'video' || /\.(mp4|mov|webm|avi)(\?|$)/i.test(pUrl);
     const wrap  = document.createElement('div');
     wrap.className = `reply-bubble ${isMe ? '' : 'them'}`;
+
+    // All sizing is inline to prevent any CSS override or flex-shrink collapsing the preview
+    const MEDIA_STYLE = 'width:100%;height:260px;min-height:260px;max-height:260px;object-fit:cover;display:block;flex-shrink:0;';
     const previewEl = isVideo
-        ? `<video class="reply-thumb" src="${escHtml(pUrl)}" muted playsinline controls style="width:100%;height:260px;min-height:260px;max-height:260px;object-fit:cover;display:block;flex-shrink:0;"></video>`
-        : `<img class="reply-thumb" src="${escHtml(pUrl)}" alt="Post preview" style="height:260px;min-height:260px;max-height:260px;" onerror="this.style.objectFit='contain';this.style.background='#1a1a1a';">`;
+        ? `<video src="${escHtml(pUrl)}" muted playsinline controls style="${MEDIA_STYLE}background:#000;"></video>`
+        : `<img src="${escHtml(pUrl)}" alt="" style="${MEDIA_STYLE}" onerror="this.style.objectFit='contain';this.style.background='#1a1a1a';">`;
+
     wrap.innerHTML = `
-        <div class="reply-preview">
+        <div style="background:var(--card2);border-bottom:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;">
             ${previewEl}
-            <div class="reply-post-info">
-                <div class="reply-post-label">POST BY</div>
-                <div class="reply-post-user">@${escHtml(pUser)}</div>
+            <div style="padding:8px 12px;flex-shrink:0;">
+                <div style="font-size:9px;color:var(--muted);font-family:'Space Mono',monospace;letter-spacing:1px;">POST BY</div>
+                <div style="font-size:11px;color:var(--neon);font-family:'Space Mono',monospace;font-weight:700;">@${escHtml(pUser)}</div>
             </div>
         </div>
         <div class="reply-text-bubble">${escHtml(m.text || '↩ Replied to a post')}</div>`;
