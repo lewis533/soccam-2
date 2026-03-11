@@ -331,7 +331,7 @@
 </nav>
 
 <script>
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzYGJ8Z8NxXZ5QiLMczHmOjPBvN46bLaJRMpDi1zc_k9Owco6yUlc5m-F4lb3kMJWNs/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxw1IzWzyk2Xf_NZ8OmImb0j8oD2QKRdILIgmtPgeIOfGMktHCeI-jaknb7D1cHwZp0/exec";
 const CLOUD_URL  = "https://api.cloudinary.com/v1_1/ddrpctqpl/auto/upload";
 const PRESET     = "lapp_reset";
 
@@ -1059,8 +1059,10 @@ async function uploadNow() {
             caption
         });
 
+        const isVault = document.getElementById('postVis').value === 'private';
         resetUploadForm();
-        toast('Posted! ✓ Upload another or go to feed');
+        if (isVault) { toast('Saved to vault! ✓'); showPage('vaultPage'); }
+        else { toast('Posted! ✓ Upload another or go to feed'); }
     } catch(e) {
         toast('Upload failed: ' + (e.message || 'unknown error'));
         btn.disabled = false;
